@@ -743,9 +743,12 @@ TYPE: TYPE can be \\='native, \\='w32, \\='emp, \\='macism, \\='im-select,
 ;;
 ;; Following codes are mainly about cursor color mode
 ;;
+(defconst sis--terminal-cursor-reset "\e]112\a"
+  "Terminal sequence that resets the cursor color to the terminal default.")
+
 (defun sis--reset-default-cursor-color (&rest _)
-    "Reset default cursor color to nil."
-    (setq sis-default-cursor-color nil))
+  "Reset default cursor color to nil."
+  (setq sis-default-cursor-color nil))
 
 (defun sis--set-cursor-color-advice (color)
   "Advice for FN of `set-cursor-color' with COLOR.
@@ -760,31 +763,68 @@ way."
     (_
      color)))
 
-(defun sis--update-cursor-color()
-  "Update cursor color according to input source."
-  ;; save original cursor color
+(defun sis--send-terminal-cursor-sequence (sequence &optional terminal)
+  "Send cursor color SEQUENCE to a live TTY TERMINAL."
+  (let ((terminal (or terminal (frame-terminal))))
+    (when (eq (terminal-live-p terminal) t)
+      (condition-case nil
+          (send-string-to-terminal sequence terminal)
+        (error nil)))))
+
+(defun sis--reset-terminal-cursor-color (&optional terminal)
+  "Reset the cursor color of TTY TERMINAL."
+  (sis--send-terminal-cursor-sequence sis--terminal-cursor-reset terminal))
+
+(defun sis--update-terminal-cursor-color (&optional terminal)
+  "Update the cursor color of TTY TERMINAL from the SIS state."
+  (if (eq sis--current 'other)
+      (sis--send-terminal-cursor-sequence
+       (format "\e]12;%s\a" sis-other-cursor-color)
+       terminal)
+    (sis--reset-terminal-cursor-color terminal)))
+
+(defun sis--setup-terminal-cursor (&optional terminal)
+  "Set up cursor color lifecycle for TTY TERMINAL."
+  (let ((terminal (or terminal (frame-terminal))))
+    (when (eq (terminal-live-p terminal) t)
+      (let ((reset-strings
+             (terminal-parameter terminal 'tty-mode-reset-strings)))
+        (unless (member sis--terminal-cursor-reset reset-strings)
+          (set-terminal-parameter
+           terminal 'tty-mode-reset-strings
+           (cons sis--terminal-cursor-reset reset-strings))))
+      (when (bound-and-true-p sis-global-cursor-color-mode)
+        (sis--update-terminal-cursor-color terminal)))))
+
+(defun sis--teardown-terminal-cursor (&optional terminal)
+  "Reset and remove cursor color lifecycle from TTY TERMINAL."
+  (let ((terminal (or terminal (frame-terminal))))
+    (when (eq (terminal-live-p terminal) t)
+      (sis--reset-terminal-cursor-color terminal)
+      (set-terminal-parameter
+       terminal 'tty-mode-reset-strings
+       (delete sis--terminal-cursor-reset
+               (terminal-parameter terminal 'tty-mode-reset-strings))))))
+
+(defun sis--resume-terminal-cursor (&optional terminal)
+  "Restore the SIS cursor color after resuming TTY TERMINAL."
+  (when (bound-and-true-p sis-global-cursor-color-mode)
+    (sis--update-terminal-cursor-color terminal)))
+
+(defun sis--update-cursor-color ()
+  "Update GUI and TTY cursor colors according to input source."
   (unless sis-default-cursor-color
     (setq sis-default-cursor-color
-          (or (when (display-graphic-p)
-                (or (cdr (assq 'cursor-color default-frame-alist))
-                    (face-background 'cursor)))
+          (or (cdr (assq 'cursor-color default-frame-alist))
+              (face-background 'cursor)
               "white")))
-  ;; for GUI
-  (when (display-graphic-p)
-    ;;
-    ;;actually which color passed to the function does not matter,
-    ;; the advice will take care of it.
-    (set-cursor-color sis-default-cursor-color))
-
-  ;; for TUI
-  (unless (display-graphic-p)
-    (pcase sis--current
-      ('english
-       (send-string-to-terminal
-        (format "\e]12;%s\a" sis-default-cursor-color)))
-      ('other
-       (send-string-to-terminal
-        (format "\e]12;%s\a" sis-other-cursor-color))))))
+  (dolist (frame (frame-list))
+    (when (display-graphic-p frame)
+      (with-selected-frame frame
+        ;; The filter advice selects the color for the current SIS state.
+        (set-cursor-color sis-default-cursor-color))))
+  (dolist (terminal (terminal-list))
+    (sis--update-terminal-cursor-color terminal)))
 
 ;;;###autoload
 (define-minor-mode sis-global-cursor-color-mode
@@ -801,14 +841,24 @@ way."
     (add-hook 'enable-theme-functions #'sis--reset-default-cursor-color)
     (add-hook 'disable-theme-functions #'sis--reset-default-cursor-color)
     (advice-add 'set-cursor-color :filter-args #'sis--set-cursor-color-advice)
-    (add-hook 'sis-change-hook #'sis--update-cursor-color))
+    (add-hook 'sis-change-hook #'sis--update-cursor-color)
+    (add-hook 'tty-setup-hook #'sis--setup-terminal-cursor)
+    (add-hook 'suspend-resume-hook #'sis--resume-terminal-cursor)
+    (add-hook 'resume-tty-functions #'sis--resume-terminal-cursor)
+    (dolist (terminal (terminal-list))
+      (sis--setup-terminal-cursor terminal)))
    ;; turn off the mode
    ((not sis-global-cursor-color-mode)
     (sis--try-disable-auto-refresh-mode)
     (remove-hook 'enable-theme-functions #'sis--reset-default-cursor-color)
     (remove-hook 'disable-theme-functions #'sis--reset-default-cursor-color)
     (advice-remove 'set-cursor-color #'sis--set-cursor-color-advice)
-    (remove-hook 'sis-change-hook #'sis--update-cursor-color))))
+    (remove-hook 'sis-change-hook #'sis--update-cursor-color)
+    (remove-hook 'tty-setup-hook #'sis--setup-terminal-cursor)
+    (remove-hook 'suspend-resume-hook #'sis--resume-terminal-cursor)
+    (remove-hook 'resume-tty-functions #'sis--resume-terminal-cursor)
+    (dolist (terminal (terminal-list))
+      (sis--teardown-terminal-cursor terminal)))))
 
 ;;
 ;; Following codes are mainly about respect mode
