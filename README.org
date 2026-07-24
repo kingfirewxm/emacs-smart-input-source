@@ -213,7 +213,16 @@ its all in English.
 
    ;; Other language input source: "rime", "sogou" or another one.
    ;; "im.rime.inputmethod.Squirrel.Rime"
-   "com.sogou.inputmethod.sogou.pinyin")
+  "com.sogou.inputmethod.sogou.pinyin")
+
+  ;; Optional: use this when every input source change in Emacs goes through
+  ;; SIS. Automatic backend reads are disabled, while `sis-get' remains an
+  ;; explicit diagnostic command.
+  ;; (setq sis-input-source-state-authority 'sis)
+
+  ;; Optional: let SIS restore state across application focus changes when the
+  ;; operating system does not already preserve per-application state.
+  ;; (setq sis-respect-application-focus t)
 
   ;; enable the /cursor color/ mode
   (sis-global-cursor-color-mode t)
@@ -248,6 +257,7 @@ ISM manually.
 | ~sis-do-set~               | Function to set the input source                   | determined from the environment      |
 | ~sis-change-hook~          | Hook to run after input source changes             | ~nil~                                |
 | ~sis-auto-refresh-seconds~ | Idle interval to auto refresh input source from OS | ~0.2~, ~nil~ to disable              |
+| ~sis-input-source-state-authority~ | Authority for the tracked state          | ~'external~                          |
 |----------------------------+----------------------------------------------------+--------------------------------------|
 
 Note:
@@ -261,6 +271,7 @@ Note:
 | ~sis-set-english~        | Set the input source to English                            |
 | ~sis-set-other~          | Set the input source to other language                     |
 | ~sis-switch~             | Switch the input source between English and other language |
+| ~sis-reapply-current-input-source~ | Reapply tracked state without reading the backend |
 |--------------------------+------------------------------------------------------------|
 
 ** About /cursor color mode/
@@ -276,6 +287,7 @@ Note:
 | ~sis-respect-start~                             | Switch to specific input source when mode enabled      | ~'english~             |
 | ~sis-respect-evil-normal-escape~                | esc to English even in evil normal state               | ~t~                    |
 | ~sis-respect-prefix-and-buffer~                 | Handle prefix key and buffer                           | ~t~                    |
+| ~sis-respect-application-focus~                 | Handle input source across application focus           | ~nil~                  |
 | ~sis-respect-go-english-triggers~               | Additional trigger to save input source and go English | ~t~                    |
 | ~sis-respect-restore-triggers~                  | Additional trigger to restore input source             | ~nil~                  |
 | ~sis-respect-minibuffer-triggers~               | Commands trigger to set input source in minibuffer     | see variable doc       |

@@ -1,11 +1,7 @@
 (source gnu)
 (source melpa)
 
-(package-file "smart-input-source.el")
+(package-file "sis.el")
 
 (development
- (depends-on "f")
- (depends-on "ecukes")
- (depends-on "ert-runner")
- (depends-on "el-mock"))
- (depends-on "elsa")
+ (depends-on "elsa"))

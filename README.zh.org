@@ -180,6 +180,13 @@ brew install macism
    ;; "im.rime.inputmethod.Squirrel.Rime"
    "com.sogou.inputmethod.sogou.pinyin")
 
+  ;; 可选：如果 Emacs 中的所有输入法切换都经过 SIS，可让 SIS 成为状态权威。
+  ;; 自动后端读取会被禁用，`sis-get' 仍可用于显式诊断。
+  ;; (setq sis-input-source-state-authority 'sis)
+
+  ;; 可选：操作系统没有按应用保存输入法状态时，让 SIS 处理失焦与恢复。
+  ;; (setq sis-respect-application-focus t)
+
   ;; 启用 /光标颜色/ 模式
   (sis-global-cursor-color-mode t)
   ;; 启用 /respect/ 模式
@@ -212,6 +219,7 @@ english text<spc><RET>中文~ ，无需手动切换输入法。
 | ~sis-do-set~               | 设置输入源的函数                       | 由环境决定                           |
 | ~sis-change-hook~          | 输入源改变后执行的钩子                 | ~nil~                                |
 | ~sis-auto-refresh-seconds~ | 从操作系统自动刷新输入源的空闲时间间隔 | ~0.2~，设为 ~nil~ 可禁用             |
+| ~sis-input-source-state-authority~ | 被跟踪状态的权威来源            | ~'external~                          |
 |----------------------------+----------------------------------------+--------------------------------------|
 
 注意：
@@ -224,6 +232,7 @@ english text<spc><RET>中文~ ，无需手动切换输入法。
 | ~sis-set-english~        | 将输入源设置为英文             |
 | ~sis-set-other~          | 将输入源设置为其他语言         |
 | ~sis-switch~             | 在英文和其他语言输入源之间切换 |
+| ~sis-reapply-current-input-source~ | 不读取后端，重新应用已跟踪状态 |
 |--------------------------+--------------------------------|
 
 ** 关于光标颜色模式
@@ -239,6 +248,7 @@ english text<spc><RET>中文~ ，无需手动切换输入法。
 | ~sis-respect-start~                             | 模式启用时切换到特定输入源                | ~'english~             |
 | ~sis-respect-evil-normal-escape~                | 即使在 evil 普通状态下也用 esc 切换到英文 | ~t~                    |
 | ~sis-respect-prefix-and-buffer~                 | 处理前缀键和缓冲区                        | ~t~                    |
+| ~sis-respect-application-focus~                 | 处理应用焦点切换时的输入源                | ~nil~                  |
 | ~sis-respect-go-english-triggers~               | 额外的保存输入源并切换到英文的触发器      | ~t~                    |
 | ~sis-respect-restore-triggers~                  | 额外的恢复输入源的触发器                  | ~nil~                  |
 | ~sis-respect-minibuffer-triggers~               | 在迷你缓冲区中设置输入源的命令触发器      | 见变量文档             |

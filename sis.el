@@ -27,6 +27,7 @@
 ;;For more information see the README in the GitHub repo.
 
 ;;; Code:
+(require 'cl-lib)
 (require 'subr-x)
 
 (defvar sis-external-ism nil
@@ -66,6 +67,17 @@ Default value is CJK characters and punctuations.")
 Emacs-nativ input method don't need it. nil to disable the timer.
 Set after the modes may have no effect.")
 
+(defvar sis-input-source-state-authority 'external
+  "Authority used to track the current input source.
+
+Possible values:
+\\='external: the input source may change outside SIS.  SIS reads and adopts
+              the state reported by `sis-do-get'.
+\\='sis:      every input source change in Emacs goes through SIS.  Automatic
+              reads are disabled and the SIS state is authoritative.
+
+Set this before enabling SIS global modes.")
+
 (defvar sis-change-hook nil
   "Hook to run when input source changes.")
 
@@ -104,6 +116,14 @@ If no trigger returns a none-nil result, english will be used as default.")
 
 (defvar sis-respect-prefix-and-buffer t
   "Preserve buffer input source when the /respect mode/ is enabled.")
+
+(defvar sis-respect-application-focus nil
+  "Whether /respect mode/ changes input source across application focus.
+
+When non-nil, losing application focus temporarily switches to English and
+regaining focus restores the saved buffer input source.  This is disabled by
+default because the original focus advice did not run; enable it explicitly
+before `sis-global-respect-mode' when SIS should manage application focus.")
 
 (defvar sis-respect-go-english-triggers nil
   "Triggers to save input source to buffer and then go to english.
@@ -307,6 +327,10 @@ meanings as `string-match-p'."
   "Buffer input source is locked.")
 (make-variable-buffer-local 'sis--for-buffer-locked)
 
+(defsubst sis--state-authoritative-p ()
+  "Return non-nil when SIS is the input source state authority."
+  (eq sis-input-source-state-authority 'sis))
+
 (defun sis--init-ism ()
   "Init input source manager."
   ;; `sis-do-get' and `sis-do-set' takes the first precedence.
@@ -349,8 +373,9 @@ meanings as `string-match-p'."
       (setq sis-do-set (sis--mk-set-fn))))
 
   ;; successfully inited
-  (when (and (functionp sis-do-get)
-             (functionp sis-do-set))
+  (when (and (functionp sis-do-set)
+             (or (sis--state-authoritative-p)
+                 (functionp sis-do-get)))
     ;; a t `sis--ism' means customized by `sis-do-get' and `sis-do-set'
     (unless sis--ism (setq sis--ism t)))
 
@@ -432,16 +457,39 @@ SOURCE should be \\='english or \\='other."
   (when (not (eq sis--previous sis--current))
     (run-hooks 'sis-change-hook)))
 
+(defun sis--input-source-reader-ready-p ()
+  "Return non-nil when the input source backend can be read."
+  (unless sis--ism-inited
+    (sis--init-ism))
+  (and sis--ism (functionp sis-do-get)))
+
+(defun sis--read-input-source-id ()
+  "Read the raw input source id reported by the backend."
+  (unless (sis--input-source-reader-ready-p)
+    (user-error "The input source manager has no state reader"))
+  (funcall sis-do-get))
+
 (defsubst sis--get ()
-  "Get the input source id."
-  (sis--ensure-ism
-   (sis--update-state (sis--normalize-to-lang (funcall sis-do-get)))))
+  "Return the current input source, adopting the backend state when needed."
+  (if (sis--state-authoritative-p)
+      sis--current
+    (when (sis--input-source-reader-ready-p)
+      (sis--update-state
+       (sis--normalize-to-lang (sis--read-input-source-id))))))
 
 (defsubst sis--set (source)
   "Set the input source according to source SOURCE."
   (sis--ensure-ism
-   (sis--update-state (sis--normalize-to-lang source))
-   (funcall sis-do-set (sis--normalize-to-source source))
+   (let ((lang (sis--normalize-to-lang source))
+         (source-id (sis--normalize-to-source source)))
+     ;; In authoritative mode, do not publish a state which the backend call
+     ;; could not even submit.  External mode keeps the upstream ordering.
+     (if (sis--state-authoritative-p)
+         (progn
+           (funcall sis-do-set source-id)
+           (sis--update-state lang))
+       (sis--update-state lang)
+       (funcall sis-do-set source-id)))
    (when sis-log-mode
      (message "Do set input source: [%s]@%s, for-buffer: %s, locked: %s"
               source (current-buffer)
@@ -449,14 +497,29 @@ SOURCE should be \\='english or \\='other."
 
 ;;;###autoload
 (defun sis-get ()
-  "Get input source."
+  "Get input source.
+
+When `sis-input-source-state-authority' is \\='sis, read the backend only for
+diagnostics and do not modify the authoritative SIS state."
   (interactive)
-  (sis--get)
-  (message (sis--normalize-to-source sis--current)))
+  (if (sis--state-authoritative-p)
+      (let* ((source-id (sis--read-input-source-id))
+             (observed (sis--normalize-to-lang source-id)))
+        (message "Observed: %s (%s); SIS authoritative state: %s"
+                 source-id observed sis--current)
+        source-id)
+    (sis--get)
+    (let ((source-id (sis--normalize-to-source sis--current)))
+      (if source-id
+          (message "%s" source-id)
+        (message nil)))))
 
 (defsubst sis--save-to-buffer ()
   "Save buffer input source."
-  (sis--get))
+  (if (sis--state-authoritative-p)
+      (unless sis--for-buffer-locked
+        (setq sis--for-buffer sis--current))
+    (sis--get)))
 
 (defsubst sis--restore-from-buffer ()
   "Restore buffer input source."
@@ -489,6 +552,9 @@ SOURCE should be \\='english or \\='other."
 (defun sis-switch ()
   "Switch input source between \\='english and \\='other."
   (interactive)
+  (when (and (sis--state-authoritative-p)
+             (not (memq sis--current '(english other))))
+    (user-error "SIS input source state is not initialized"))
   (setq sis--for-buffer-locked nil)
   (cond
    ;; current is \\='english
@@ -497,6 +563,15 @@ SOURCE should be \\='english or \\='other."
    ;; current is \\='other
    ((eq sis--current 'other)
     (sis--set-english))))
+
+;;;###autoload
+(defun sis-reapply-current-input-source ()
+  "Reapply the tracked input source without reading or changing SIS state."
+  (interactive)
+  (unless (memq sis--current '(english other))
+    (user-error "SIS input source state is not initialized"))
+  (sis--ensure-ism
+   (funcall sis-do-set (sis--normalize-to-source sis--current))))
 
 ;;;###autoload
 (defun sis-ism-lazyman-config (english-source other-source &optional ism-type)
@@ -599,20 +674,37 @@ TYPE: TYPE can be \\='native, \\='w32, \\='emp, \\='macism, \\='im-select,
 (defvar sis--auto-refresh-timer-scale 1
   "Interval scale during this idle period.")
 
+(defsubst sis--auto-refresh-allowed-p ()
+  "Return non-nil when automatic backend state reads are allowed."
+  (and sis-auto-refresh-seconds
+       (not (sis--state-authoritative-p))))
+
+(defun sis--cancel-auto-refresh-timers ()
+  "Cancel all automatic input source refresh timers."
+  (when sis--auto-refresh-manager-timer
+    (cancel-timer sis--auto-refresh-manager-timer))
+  (when sis--auto-refresh-timer
+    (cancel-timer sis--auto-refresh-timer))
+  (setq sis--auto-refresh-manager-timer nil
+        sis--auto-refresh-timer nil))
+
 (defun sis--auto-refresh-timer-function ()
   "Auto refresh input source on idle timer."
   (when sis--auto-refresh-timer
     (cancel-timer sis--auto-refresh-timer))
-  (sis--save-to-buffer)
-  (setq sis--auto-refresh-timer
-        (run-with-idle-timer
-         ;; every time the wait period increases by auto-refresh-seconds
-         (time-add (current-idle-time)
-                   (* sis-auto-refresh-seconds sis--auto-refresh-timer-scale))
-         nil
-         #'sis--auto-refresh-timer-function))
-  (setq sis--auto-refresh-timer-scale
-        (* 1.05 sis--auto-refresh-timer-scale)))
+  (setq sis--auto-refresh-timer nil)
+  (when (and (bound-and-true-p sis-auto-refresh-mode)
+             (sis--auto-refresh-allowed-p))
+    (sis--save-to-buffer)
+    (setq sis--auto-refresh-timer
+          (run-with-idle-timer
+           ;; every time the wait period increases by auto-refresh-seconds
+           (time-add (current-idle-time)
+                     (* sis-auto-refresh-seconds sis--auto-refresh-timer-scale))
+           nil
+           #'sis--auto-refresh-timer-function))
+    (setq sis--auto-refresh-timer-scale
+          (* 1.05 sis--auto-refresh-timer-scale))))
 
 ;;;###autoload
 (define-minor-mode sis-auto-refresh-mode
@@ -622,27 +714,30 @@ TYPE: TYPE can be \\='native, \\='w32, \\='emp, \\='macism, \\='im-select,
   (cond
    ;; turn on the mode
    (sis-auto-refresh-mode
-    (when sis-auto-refresh-seconds
-      (when sis--auto-refresh-manager-timer
-        (cancel-timer sis--auto-refresh-manager-timer))
-      (setq sis--auto-refresh-manager-timer
-            (run-with-idle-timer sis-auto-refresh-seconds t
-                                 #'sis--auto-refresh-timer-restart))))
+    (if (sis--auto-refresh-allowed-p)
+        (progn
+          (sis--cancel-auto-refresh-timers)
+          (setq sis--auto-refresh-manager-timer
+                (run-with-idle-timer sis-auto-refresh-seconds t
+                                     #'sis--auto-refresh-timer-restart)))
+      (sis--cancel-auto-refresh-timers)
+      (setq sis-auto-refresh-mode nil)
+      (when (called-interactively-p 'interactive)
+        (user-error "Automatic refresh is disabled when SIS is authoritative"))))
    ;; turn off the mode
    ((not sis-auto-refresh-mode)
-    (when sis--auto-refresh-manager-timer
-      (cancel-timer sis--auto-refresh-manager-timer))
-    (when sis--auto-refresh-timer (cancel-timer sis--auto-refresh-timer)))))
+    (sis--cancel-auto-refresh-timers))))
 
 (defun sis--auto-refresh-timer-restart ()
   "Restart `sis--auto-refresh-timer'."
-  (when (and sis-auto-refresh-seconds sis-auto-refresh-mode)
+  (when (and (bound-and-true-p sis-auto-refresh-mode)
+             (sis--auto-refresh-allowed-p))
     (setq sis--auto-refresh-timer-scale 1)
     (sis--auto-refresh-timer-function)))
 
 (defun sis--try-enable-auto-refresh-mode ()
   "Try to enable auto refresh mode."
-  (when sis-auto-refresh-seconds
+  (when (sis--auto-refresh-allowed-p)
     (sis-auto-refresh-mode t)))
 
 ;;
@@ -823,34 +918,37 @@ looked up as a whole, like the default `describe-key' behavior."
                         (listify-key-sequence (this-command-keys)))
                 unread-command-events)))
 
-(defun sis--respect-focus-change-advice ()
-  "Advice for `after-focus-change-function'."
-  (if (frame-focus-state)
-      (sis--respect-focus-in-handler)
-    (sis--respect-focus-out-handler)))
+(defun sis--respect-focus-change-handler ()
+  "Handle changes reported by `after-focus-change-function'."
+  (when sis-respect-application-focus
+    (if (frame-focus-state)
+        (sis--respect-focus-in-handler)
+      (sis--respect-focus-out-handler))))
 
 (defun sis--respect-focus-out-handler ()
   "Handler for `focus-out-hook'."
 
-  ;; `mouse-drag-region' causes lots of noise.
-  (unless (eq this-command 'mouse-drag-region)
-    ;; can't use `sis--save-to-buffer' directly
-    ;; because OS may has already changed input source
-    ;; when other windows get focus.
-    ;; so, don't get the current OS input source
-    (setq sis--for-buffer-locked t)
-    (sis--set-english))
+  (when sis-respect-application-focus
+    ;; `mouse-drag-region' causes lots of noise.
+    (unless (eq this-command 'mouse-drag-region)
+      ;; can't use `sis--save-to-buffer' directly
+      ;; because OS may has already changed input source
+      ;; when other windows get focus.
+      ;; so, don't get the current OS input source
+      (setq sis--for-buffer-locked t)
+      (sis--set-english))
 
-  (when sis-log-mode
-    (message "Handle save hook, save [%s] to [%s]."
-             sis--for-buffer (current-buffer))))
+    (when sis-log-mode
+      (message "Handle save hook, save [%s] to [%s]."
+               sis--for-buffer (current-buffer)))))
 
 (defun sis--respect-focus-in-handler ()
   "Handler for `focus-in-hook'."
-  (when sis-log-mode
-    (message "Handle restore hook, restore [%s] from [%s] ."
-             sis--for-buffer (current-buffer)))
-  (sis--restore-from-buffer))
+  (when sis-respect-application-focus
+    (when sis-log-mode
+      (message "Handle restore hook, restore [%s] from [%s] ."
+               sis--for-buffer (current-buffer)))
+    (sis--restore-from-buffer)))
 
 (defun sis--respect-pre-command-handler ()
   "Handler for `pre-command-hook' to preserve input source."
@@ -1079,8 +1177,9 @@ looked up as a whole, like the default `describe-key' behavior."
        (add-hook 'minibuffer-setup-hook #'sis--minibuffer-setup-handler)
        (add-hook 'minibuffer-exit-hook #'sis--minibuffer-exit-handler)
 
-       (advice-add 'after-focus-change-function :after
-                   #'sis--respect-focus-change-advice)
+       (when sis-respect-application-focus
+         (add-function :after after-focus-change-function
+                       #'sis--respect-focus-change-handler))
 
        (dolist (trigger sis-respect-go-english-triggers)
          (advice-add trigger :before #'sis--respect-go-english-advice))
@@ -1128,8 +1227,8 @@ looked up as a whole, like the default `describe-key' behavior."
     (remove-hook 'minibuffer-exit-hook #'sis--minibuffer-exit-handler)
 
     ;; for preserving buffer input source
-    (advice-remove 'after-focus-change-function
-                   #'sis--respect-focus-change-advice)
+    (remove-function after-focus-change-function
+                     #'sis--respect-focus-change-handler)
 
     (dolist (trigger sis-respect-go-english-triggers)
       (advice-remove trigger #'sis--respect-go-english-advice))
@@ -1149,7 +1248,7 @@ looked up as a whole, like the default `describe-key' behavior."
 
 (defun sis--try-disable-auto-refresh-mode ()
   "Try to disable auto refresh mode."
-  (when (or (not sis-auto-refresh-seconds)
+  (when (or (not (sis--auto-refresh-allowed-p))
             (and (not sis-global-cursor-color-mode)
                  (not sis-global-respect-mode)))
     (sis-auto-refresh-mode -1)))
